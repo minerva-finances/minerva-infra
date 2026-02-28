@@ -1,0 +1,101 @@
+version: '3.8'
+
+services:
+  # Oracle Database Service
+  oracle-db:
+    image: container-registry.oracle.com/database/free:latest
+    container_name: minerva-oracle-db-dev
+    ports:
+      - "1521:1521"
+    environment:
+      - ORACLE_PWD=Minerva2024!
+      - ORACLE_CHARACTERSET=AL32UTF8
+    volumes:
+      - oracle-data-dev:/opt/oracle/oradata
+      - ./minerva-infra/docker-oracle/init:/docker-entrypoint-initdb.d
+    networks:
+      - minerva-network
+    restart: unless-stopped
+
+  # Redis Cache Service
+  redis:
+    image: redis:7-alpine
+    container_name: minerva-redis-dev
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data-dev:/data
+    networks:
+      - minerva-network
+    restart: unless-stopped
+
+  # Minerva Scraper Service (Development mode with hot-reload)
+  minerva-scraper-dev:
+    build:
+      context: ./minerva-scraper
+      dockerfile: Dockerfile.dev
+    container_name: minerva-scraper-dev
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - HOST=0.0.0.0
+      - NODE_ENV=development
+    volumes:
+      - ./minerva-scraper:/app
+      - /app/node_modules
+      - /app/.env.local:/app/.env.local
+    networks:
+      - minerva-network
+    depends_on:
+      - redis
+    restart: unless-stopped
+    profiles:
+      - dev
+
+  # Minerva API Service (Development mode with hot-reload)
+  minerva-api-dev:
+    build:
+      context: ./minerva-api
+      dockerfile: Dockerfile.dev
+    container_name: minerva-api-dev
+    ports:
+      - "8080:8080"
+    environment:
+      # Environment variables (modify as needed)
+      - PORT=8080
+      - ENV=development
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - REDIRECT_URL=http://localhost:5173/auth/callback
+      - JWT_SECRET=development-secret-do-not-use-in-production
+      - DATABASE_URL=oracle-xdb://system:Minerva2024!@oracle-db:1521/XE
+      - REDIS_URL=redis://redis:6379
+      - SCRAPER_URL=http://minerva-scraper:3001
+    volumes:
+      - ./minerva-api:/app
+      - /app/bin
+    networks:
+      - minerva-network
+    depends_on:
+      oracle-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minerva-scraper:
+        condition: service_started
+    profiles:
+      - dev
+
+volumes:
+  oracle-data-dev:
+    driver: local
+  redis-data-dev:
+    driver: local
+
+networks:
+  minerva-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

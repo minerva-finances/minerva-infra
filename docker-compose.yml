@@ -1,0 +1,128 @@
+version: '3.8'
+
+services:
+  # Oracle Database Service
+  oracle-db:
+    image: container-registry.oracle.com/database/free:latest
+    container_name: minerva-oracle-db
+    ports:
+      - "1521:1521"
+    environment:
+      - ORACLE_PWD=Minerva2024!
+      - ORACLE_CHARACTERSET=AL32UTF8
+    volumes:
+      - oracle-data:/opt/oracle/oradata
+      - ./minerva-infra/docker-oracle/init:/docker-entrypoint-initdb.d
+    networks:
+      - minerva-network
+    healthcheck:
+      test: ["CMD", "sqlplus", "-s", "sys/Minerva2024!@//localhost:1521/XE", "as", "sysdba", "-c", "SELECT 1 FROM DUAL;"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
+    healthcheck:
+      test: ["CMD-SHELL", "ls /opt/oracle/oradata/XE/system01.dbf > /dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 300s
+
+  # Redis Cache Service
+  redis:
+    image: redis:7-alpine
+    container_name: minerva-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - minerva-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # Minerva Scraper Service
+  minerva-scraper:
+    build:
+      context: ./minerva-scraper
+      dockerfile: Dockerfile
+    container_name: minerva-scraper
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - HOST=0.0.0.0
+      - NODE_ENV=development
+    volumes:
+      - ./minerva-scraper:/app
+      - /app/node_modules
+    networks:
+      - minerva-network
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Minerva API Service
+  minerva-api:
+    build:
+      context: ./minerva-api
+      dockerfile: Dockerfile
+    container_name: minerva-api
+    ports:
+      - "8080:8080"
+    environment:
+      # Environment variables (example values - modify as needed)
+      - PORT=8080
+      - ENV=development
+      - GOOGLE_CLIENT_ID=your-google-client-id
+      - GOOGLE_CLIENT_SECRET=your-google-client-secret
+      - REDIRECT_URL=http://localhost:5173/auth/callback
+      - JWT_SECRET=change-me-in-production-but-not-for-dev
+      - DATABASE_URL=oracle-xdb://system:Minerva2024!@oracle-db:1521/XE
+      - REDIS_URL=redis://redis:6379
+      - SCRAPER_URL=http://minerva-scraper:3001
+    volumes:
+      - ./minerva-api:/app
+      - /app/go-mod-cache
+      - /app/bin
+    networks:
+      - minerva-network
+    depends_on:
+      oracle-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minerva-scraper:
+        condition: service_started
+    restart: unless-stopped
+
+  # Traefik Reverse Proxy (optional)
+  # Uncomment if you want to use Traefik for routing
+  # traefik:
+  #   image: traefik:v2.10
+  #   container_name: minerva-traefik
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #     - ./traefik.yml:/etc/traefik/traefik.yml:ro
+  #   networks:
+  #     - minerva-network
+
+volumes:
+  oracle-data:
+    driver: local
+  redis-data:
+    driver: local
+
+networks:
+  minerva-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
