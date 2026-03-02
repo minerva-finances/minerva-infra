@@ -1,33 +1,6 @@
 version: '3.8'
 
 services:
-  # Oracle Database Service
-  oracle-db:
-    image: container-registry.oracle.com/database/free:latest
-    container_name: minerva-oracle-db
-    ports:
-      - "1521:1521"
-    environment:
-      - ORACLE_PWD=Minerva2024!
-      - ORACLE_CHARACTERSET=AL32UTF8
-    volumes:
-      - oracle-data:/opt/oracle/oradata
-      - ./minerva-infra/docker-oracle/init:/docker-entrypoint-initdb.d
-    networks:
-      - minerva-network
-    healthcheck:
-      test: ["CMD", "sqlplus", "-s", "sys/Minerva2024!@//localhost:1521/XE", "as", "sysdba", "-c", "SELECT 1 FROM DUAL;"]
-      interval: 30s
-      timeout: 10s
-      retries: 10
-      start_period: 300s
-    healthcheck:
-      test: ["CMD-SHELL", "ls /opt/oracle/oradata/XE/system01.dbf > /dev/null 2>&1"]
-      interval: 30s
-      timeout: 10s
-      retries: 10
-      start_period: 300s
-
   # Redis Cache Service
   redis:
     image: redis:7-alpine
@@ -48,7 +21,7 @@ services:
   # Minerva Scraper Service
   minerva-scraper:
     build:
-      context: ./minerva-scraper
+      context: ../minerva-scraper
       dockerfile: Dockerfile
     container_name: minerva-scraper
     ports:
@@ -57,19 +30,40 @@ services:
       - PORT=3001
       - HOST=0.0.0.0
       - NODE_ENV=development
+      - REDIS_URL=redis://redis:6379
     volumes:
-      - ./minerva-scraper:/app
+      - ../minerva-scraper:/app
       - /app/node_modules
     networks:
       - minerva-network
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Minerva UI Service
+  minerva-ui:
+    build:
+      context: ../minerva-ui
+      dockerfile: Dockerfile
+    container_name: minerva-ui
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://minerva-api:8080
+    volumes:
+      - ../minerva-ui:/app
+      - /app/node_modules
+    networks:
+      - minerva-network
+    depends_on:
+      - minerva-api
     restart: unless-stopped
 
   # Minerva API Service
   minerva-api:
     build:
-      context: ./minerva-api
+      context: ../minerva-api
       dockerfile: Dockerfile
     container_name: minerva-api
     ports:
@@ -82,41 +76,52 @@ services:
       - GOOGLE_CLIENT_SECRET=your-google-client-secret
       - REDIRECT_URL=http://localhost:5173/auth/callback
       - JWT_SECRET=change-me-in-production-but-not-for-dev
-      - DATABASE_URL=oracle-xdb://system:Minerva2024!@oracle-db:1521/XE
+      # Use external Oracle Autonomous DB on OCI
+      - DATABASE_URL=oracle-xdb://user:password@host:port/service_name
       - REDIS_URL=redis://redis:6379
       - SCRAPER_URL=http://minerva-scraper:3001
     volumes:
-      - ./minerva-api:/app
+      - ../minerva-api:/app
       - /app/go-mod-cache
       - /app/bin
     networks:
       - minerva-network
     depends_on:
-      oracle-db:
-        condition: service_healthy
       redis:
         condition: service_healthy
       minerva-scraper:
         condition: service_started
     restart: unless-stopped
 
-  # Traefik Reverse Proxy (optional)
-  # Uncomment if you want to use Traefik for routing
-  # traefik:
-  #   image: traefik:v2.10
-  #   container_name: minerva-traefik
-  #   ports:
-  #     - "80:80"
-  #     - "443:443"
-  #   volumes:
-  #     - /var/run/docker.sock:/var/run/docker.sock:ro
-  #     - ./traefik.yml:/etc/traefik/traefik.yml:ro
-  #   networks:
-  #     - minerva-network
+  # Minerva Worker Service
+  minerva-worker:
+    build:
+      context: ../minerva-worker
+      dockerfile: Dockerfile
+    container_name: minerva-worker
+    environment:
+      - ENV=development
+      # Use external Oracle Autonomous DB on OCI
+      - DATABASE_URL=oracle-xdb://user:password@host:port/service_name
+      - REDIS_URL=redis://redis:6379
+      - SCRAPER_URL=http://minerva-scraper:3001
+      - API_URL=http://minerva-api:8080
+    volumes:
+      - ../minerva-worker:/app
+      - /app/go-mod-cache
+      - /app/bin
+    networks:
+      - minerva-network
+    depends_on:
+      redis:
+        condition: service_healthy
+      minerva-scraper:
+        condition: service_started
+      minerva-api:
+        condition: service_started
+    restart: unless-stopped
 
 volumes:
-  oracle-data:
-    driver: local
   redis-data:
     driver: local
 
